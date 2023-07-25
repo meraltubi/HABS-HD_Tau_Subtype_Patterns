@@ -1,0 +1,555 @@
+---
+title: "AB positive Tau-defined subtypes by sex and metabolics"
+author: "Brandon Hall"
+output:
+  prettydoc::html_pretty:
+    theme: hpster
+    highlight: github
+    toc: true
+    number_sections: true
+---
+
+# Loading libraries
+```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2) # you know this legend
+library(plyr) 
+library(dplyr)
+library(ggsignif) # for creating plots with sigificance added
+library(nnet) # for creating multinomial logistic regression models
+library(AICcmodavg) # for model comparison
+library(tidyverse)
+library(readr)
+```
+
+# Getting set up
+## Loading data
+
+This chunk loads the required CSVs and merges them into one dataframe
+```{r data, echo=FALSE, message=TRUE, warning=FALSE}
+setwd("~/Documents/BraskieLab/My projects/Tau subtypes x metabolics/")
+df.subtypes <- read.csv("AB_Pos Subject tau subtype PET data.csv")
+colnames(df.subtypes)[1] <- "Med_ID"
+df.HABS <- read.csv("~/Documents/BraskieLab/HABS data/HD 1 Merged 50+ Req 229_cleaned.csv")
+df.our_AB_PET <- read.csv("~/Documents/BraskieLab/HABS data/HABS_HD_FBB_PET_data_2022_12_31 - Inclusions.csv")
+colnames(df.our_AB_PET)[1] = "Med_ID"
+df.our_AB_PET_reduced <- df.our_AB_PET[,c("Med_ID", "AB_pos")]
+df.most<- merge(df.subtypes, df.HABS, by = "Med_ID")
+df.all<- merge(df.most, df.our_AB_PET_reduced, by = "Med_ID")
+#write.csv(df.all, file = "~/Documents/BraskieLab/My projects/Tau subtypes x metabolics/subtype+HABS_merged.csv", row.names = FALSE)
+```
+
+### Duplicating and changing variable types
+
+```{r make_diabetes_and_sex_vars}
+df.all$Diabetes <- df.all$CDX_Diabetes
+df.all$Diabetes <- as.character(df.all$Diabetes)
+df.all$Diabetes[df.all$Diabetes == '0'] <- 'non diabetic'
+df.all$Diabetes[df.all$Diabetes == '1'] <- 'diabetic'
+
+df.all$Sex <- df.all$ID_Gender
+df.all$Sex <- as.character(df.all$Sex)
+df.all$Sex[df.all$ID_Gender == '0'] <- 'male'
+df.all$Sex[df.all$ID_Gender == '1'] <- 'female'
+
+df.all$Subtype[df.all$Subtype == 'not AD'] <- 'submedian tau'
+```
+### Change variable types
+
+This chunk changes the variable types as needed for subsequent analyses
+```{r var_types, echo=FALSE, message=FALSE, warning=FALSE}
+df.all$CDX_Cog <- as.factor(df.all$CDX_Cog)
+df.all$Age <- as.numeric(df.all$Age)
+df.all$ID_Gender <- as.factor(df.all$ID_Gender)
+df.all$CDX_Diabetes <- as.factor(df.all$CDX_Diabetes)
+df.all$Diabetes <- as.factor(df.all$Diabetes)
+df.all$CDX_Hypertension <- as.factor(df.all$CDX_Hypertension)
+df.all$ID_Hispanic[df.all$ID_Hispanic == '3'] <- '2'
+df.all$ID_Hispanic[df.all$ID_Hispanic == '5'] <- '2'
+df.all$ID_Hispanic <- as.factor(df.all$ID_Hispanic)
+df.all$ID_Hispanic <- droplevels(df.all$ID_Hispanic)
+df.all$ID_Race_Black <- as.factor(df.all$ID_Race_Black)
+df.all$APOE4_Positivity <- as.factor(df.all$APOE4_Positivity)
+df.all$simoa_plasma_Total_Tau <- as.numeric(df.all$simoa_plasma_Total_Tau)
+df.all$Final_subtype <- factor(df.all$Final_subtype)
+df.all$X01_AB_FBB_pos <- as.factor(df.all$X01_AB_FBB_pos)
+df.all$APOE4_Positivity <- as.factor(df.all$APOE4_Positivity)
+df.all$OM_BMI <- as.double(df.all$OM_BMI)
+df.all$Subtype <- factor(df.all$Subtype, ordered = FALSE)
+df.all$Age_log <- log(df.all$Age)
+df.all$OM_BMI_log <- log(df.all$OM_BMI)
+df.all$X01_L_hippocampus <- as.numeric(df.all$X01_L_hippocampus)
+df.all$X01_R_hippocampus <- as.numeric(df.all$X01_R_hippocampus)
+df.all$whole_hippo <- (df.all$X01_L_hippocampus + df.all$X01_R_hippocampus)/2
+```
+
+### Subset from MCI & AD
+
+This chunk create subset dataframes from the prior, unified dataframe
+```{r subsetting2}
+# only MCI and AD subjects
+df.mciad <- subset(df.all,df.all$CDX_Cog != "0")
+df.mciad$OM_BMI <- as.double(df.mciad$OM_BMI)
+df.mciad$CDX_Cog <- factor(df.mciad$CDX_Cog, ordered = FALSE)
+df.females <- subset(df.mciad, df.mciad$ID_Gender == "1")
+df.males <- subset(df.mciad, df.mciad$ID_Gender == "0")
+df.submed <- subset(df.mciad, df.mciad$Final_subtype == "0")
+df.typical <- subset(df.mciad, df.mciad$Final_subtype == "1")
+df.lp <- subset(df.mciad, df.mciad$Final_subtype == "2")
+df.hs <- subset(df.mciad, df.mciad$Final_subtype == "3")
+df.MA <- subset(df.mciad, df.mciad$ID_Hispanic != "1")
+df.NHW <- subset(df.mciad, df.mciad$ID_Hispanic == "1") 
+df.black <- subset(df.mciad, df.mciad$ID_Race_Black == "1")
+df.typical_f <- subset(df.typical, df.typical$ID_Gender=="1") # create typical female-only subset
+df.typical_m <- subset(df.typical, df.typical$ID_Gender=="0") # create typical male-only subset
+df.lp_f <- subset(df.lp, df.lp$ID_Gender=="1") # create lp female-only subset
+df.lp_m <- subset(df.lp, df.lp$ID_Gender=="0") # create lp male-only subset
+df.hs_f <- subset(df.hs, df.hs$ID_Gender=="1") # create hs female-only subset
+df.hs_m <- subset(df.hs, df.hs$ID_Gender=="0") # create hs male-only subset
+df.submed_f <- subset(df.submed, df.submed$ID_Gender=="1") # create submed female-only subset
+df.submed_m <- subset(df.submed, df.submed$ID_Gender=="0") # create submed male-only subset
+df.all_AB_pos <- subset(df.all,df.all$AB_pos == "1")
+df.mciad_AB_pos <- subset(df.mciad,df.mciad$AB_pos == "1")
+
+#write.csv(df.mciad, file = "~/Documents/BraskieLab/My projects/Tau subtypes x metabolics/MCI_AD.csv", row.names = FALSE)
+
+df.test_AB <- subset(df.mciad, select = c("Med_ID", "Subtype", "OM_BMI", "OM_BMI_log", "ID_Hispanic", "ID_Race_Black", "CDX_Diabetes", "Diabetes", "CDX_Hypertension", "Age", "Sex", "CDX_Cog", "ID_Hispanic", "ID_Race_Black", "AB_pos", "ID_Education", "X01_MRI_Scanner", "Ratio.of.Hippocampal.SUVR.to.Neocortical.SUVR")) # create a subsetted data frame containing only what variables I need
+
+df.test_AB <- df.test_AB[complete.cases(df.test_AB) ,] # removed any subjects who have incomplete data
+
+df.submed <- subset(df.test_AB, df.test_AB$Subtype == "submedian tau")
+df.typical <- subset(df.test_AB, df.test_AB$Subtype == "typical")
+df.lp <- subset(df.test_AB, df.test_AB$Subtype == "limbic predominant")
+df.hs <- subset(df.test_AB, df.test_AB$Subtype == "hippocampal sparing")
+df.MA <- subset(df.test_AB, df.test_AB$ID_Hispanic != "1")
+df.NHW <- subset(df.test_AB, df.test_AB$ID_Hispanic == "1") 
+df.black <- subset(df.test_AB, df.test_AB$ID_Race_Black == "1")
+```
+
+# Barcharts
+
+## 1: Sex
+
+This chunk provides the barcharts for visualizing the difference in sex between subtypes
+```{r sex_plot}
+# subtype x sex
+ggplot(df.test_AB, aes(x = Subtype, fill = Sex)) + 
+  geom_bar(width = 0.4, position = "dodge") + 
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "(A) Sex by tau pattern", fill = "Sex", x = "Tau pattern") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+## 2: Diabetes
+
+This chunk provides the barcharts for visualizing the difference in diabetic diagnoses between subtypes
+```{r sex_diab_plot}
+
+# subtype x diabetes
+ggplot(df.test_AB, aes(x = Subtype, fill = Diabetes)) + 
+  geom_bar(width = 0.6, position = "dodge") + 
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "Diabetic diagnosis by subtype", fill = "Diabetes", x = "Subtype") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+##3: hypertension
+
+```{r hypertenseplot}
+
+ggplot(df.mciad, aes(x = Subtype, fill = CDX_Hypertension)) + geom_bar(width = 0.4, position = "dodge") +
+  labs(title = "Hypertension diagnosis by subtype", fill = "hypertension diagnosis", x = "subtype") +
+  scale_fill_discrete(labels=c("Hypertension negative", "Hypertension positive", "NA")) +
+  ylim(0,100) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+##4: ID_Black
+
+```{r blackplot}
+
+ggplot(df.test, aes(x = Subtype, fill = ID_Race_Black)) + 
+  geom_bar(width = 0.4, position = "dodge") + 
+  labs(title = "Black identity by subtype", fill = "Self-report identity: black", x = "subtype") + 
+  scale_fill_discrete(labels=c("Not African American", "African American")) +
+  ylim(0,100) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+##5: ID_Hispanic
+
+```{r hispplot}
+
+ggplot(df.test_AB, aes(x = Subtype, fill = ID_Hispanic)) + 
+  geom_bar(width = 0.4, position = "dodge") + 
+  labs(title = "Hispanic identity by subtype", fill = "Self-report identity: Hispanic", x = "subtype") +
+  scale_fill_discrete(labels=c("Non-Hispanc", "Hispanic")) +
+  ylim(0,100) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+##6: AB_FBB pos
+```{r hispplot2}
+
+ggplot(df.mciad, aes(x = Subtype, fill = X01_AB_FBB_pos)) + 
+  geom_bar(width = 0.4, position = "dodge") + 
+  labs(title = "Amyliod positivity by subtype", fill = "ADNI3 cutoff: SUVR > 1.08", x = "subtype") + 
+  ylim(0,100) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+# Violin plots
+## 1: BMI
+```{r viol1}
+ggplot(df.test_AB, aes(x = Subtype, y = OM_BMI)) +
+  geom_violin(aes(fill = Subtype), alpha = 0.5, draw_quantiles = c(0.25, 0.5, 0.75)) +
+  labs(title = "BMI by tau pattern", y = "Body mass index", fill = "Tau pattern") +
+  ylim(10,100) + 
+  theme(axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1)) + 
+  geom_signif(comparisons = list(c("hippocampal sparing", "typical"), c("hippocampal sparing", "not AD")), y_position = c(85,75), annotations = c("*", "**"))
+```
+
+## 2: Age
+```{r viol2}
+ggplot(df.test_AB, aes(x = Subtype, y = Age)) + 
+  geom_violin(aes(fill = Subtype), alpha = 0.5, draw_quantiles = c(0.25, 0.5, 0.75)) +
+  labs(title = " (B) Age by tau pattern", y = "Age", fill = "Tau pattern") + 
+  ylim(40,100) +
+  theme(axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1)) + 
+  geom_signif(comparisons = list(c("hippocampal sparing", "limbic predominant"), c("typical", "hippocampal sparing")), y_position = c(95,90), annotations = c("**", "*"))
+```
+# Chi square test
+
+``` {r chisq}
+set.seed(1001)
+chisq.test(df.test_AB$ID_Hispanic, df.test_AB$Subtype, correct = FALSE, p = rep(1/length(df.mciad$Subtype), length(df.mciad$Subtype)), simulate.p.value = TRUE, B = 1000)
+
+chisq.test(df.test_AB$ID_Race_Black, df.test_AB$Subtype, correct = FALSE, p = rep(1/length(df.mciad$Subtype), length(df.mciad$Subtype)), simulate.p.value = TRUE, B = 1000)
+
+chisq.test(df.mciad$X01_AB_FBB_pos, df.mciad$Subtype, correct = FALSE, p = rep(1/length(df.mciad$Subtype), length(df.mciad$Subtype)), simulate.p.value = TRUE, B = 1000)
+```
+
+# multinomial logistic regression
+
+All models include covariates of age and cognitive status
+
+## Typical reference
+```{r multinom1.1}
+set.seed(0001)
+df.test_AB$Subtype <- relevel(df.test_AB$Subtype, ref = "typical")
+# create models
+m.diabetes <- multinom(data = df.test_AB, Subtype ~ CDX_Diabetes + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.hypertension <- multinom(data = df.test_AB, Subtype ~ CDX_Hypertension + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.BMI <- multinom(data = df.test_AB, Subtype ~ OM_BMI + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.AB_pos <- multinom(data = df.test_AB, Subtype ~ AB_pos + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.combined <- multinom(data = df.test_AB, Subtype ~ OM_BMI + CDX_Hypertension + CDX_Diabetes + AB_pos + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.interaction <- multinom(data = df.test_AB, Subtype ~  CDX_Diabetes*OM_BMI + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+```
+#### Diabetes
+```{r multinom1.2}
+set.seed(0001)
+summary(m.diabetes) 
+predict(m.diabetes, df.test_AB, type = "prob") 
+cm <- table(predict(m.diabetes), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.diabetes)$coefficients/summary(m.diabetes)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p
+```
+#### BMI
+```{r multinom1.3}
+set.seed(0001)
+summary(m.BMI) 
+predict(m.BMI, df.test_AB, type = "prob") 
+cm <- table(predict(m.BMI), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.BMI)$coefficients/summary(m.BMI)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p
+```
+#### Hypertension
+```{r multinom1.3.2}
+set.seed(011)
+summary(m.hypertension) 
+predict(m.hypertension, df.test_AB, type = "prob") 
+cm <- table(predict(m.hypertension), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.hypertension)$coefficients/summary(m.hypertension)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+
+#### AB positivity
+```{r multinom1.3.3}
+set.seed(011)
+summary(m.AB_pos) 
+predict(m.AB_pos, df.test_AB, type = "prob") 
+cm <- table(predict(m.AB_pos), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.AB_pos)$coefficients/summary(m.AB_pos)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### Combined 
+```{r multinom1.4}
+summary(m.combined) 
+predict(m.combined, df.test_AB, type = "prob") 
+cm <- table(predict(m.combined), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.combined)$coefficients/summary(m.combined)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p
+```
+#### Interaction
+
+Add for per the feedback of Dr. Yaffe. No sig interaction. 
+```{r multinom1.5}
+summary(m.interaction) 
+predict(m.interaction, df.test_AB, type = "prob") 
+cm <- table(predict(m.interaction), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.interaction)$coefficients/summary(m.interaction)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+### Comparing models
+```{r model_compare_1}
+models <- list(m.diabetes, m.hypertension, m.BMI, m.interaction, m.combined, m.AB_pos)
+
+model.names <- c('m.diabetes', 'm.hypertension', 'm.BMI', 'm.interaction', "m.combined", "m.AB_pos")
+
+aictab(cand.set = models, modnames = model.names)
+```
+
+## limbic predom reference
+```{r multinom2}
+set.seed(0001)
+df.test_AB$Subtype <- relevel(df.test_AB$Subtype, ref = "limbic predominant")
+```
+### comparing models
+```{r multinom1.1.2}
+# create models
+set.seed(0001)
+
+m.diabetes2 <- multinom(data = df.test_AB, Subtype ~ CDX_Diabetes + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.hypertension2 <- multinom(data = df.test_AB, Subtype ~ CDX_Hypertension + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.BMI2 <- multinom(data = df.test_AB, Subtype ~ OM_BMI + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.AB_pos2 <- multinom(data = df.test_AB, Subtype ~ AB_pos + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.combined2 <- multinom(data = df.test_AB, Subtype ~ OM_BMI + CDX_Hypertension + CDX_Diabetes + AB_pos + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.interaction2 <- multinom(data = df.test_AB, Subtype ~  CDX_Diabetes*OM_BMI + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+```
+#### Diabetes
+```{r multinom2.2}
+set.seed(0001)
+summary(m.diabetes2) 
+predict(m.diabetes2, df.test_AB, type = "prob") 
+cm <- table(predict(m.diabetes2), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.diabetes2)$coefficients/summary(m.diabetes2)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p 
+```
+#### BMI
+```{r multinom2.3}
+summary(m.BMI2) 
+predict(m.BMI2, df.test_AB, type = "prob") 
+cm <- table(predict(m.BMI2), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.BMI2)$coefficients/summary(m.BMI2)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p
+```
+#### Hypertension
+```{r multinom2.4}
+set.seed(011)
+summary(m.hypertension2) 
+predict(m.hypertension2, df.test_AB, type = "prob") 
+cm <- table(predict(m.hypertension2), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.hypertension2)$coefficients/summary(m.hypertension2)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### AB positivity
+```{r multinom2.3.3}
+set.seed(011)
+summary(m.AB_pos2) 
+predict(m.AB_pos2, df.test_AB, type = "prob") 
+cm <- table(predict(m.AB_pos2), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.AB_pos2)$coefficients/summary(m.AB_pos2)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### Combined
+```{r multinom2.5}
+set.seed(011)
+summary(m.combined2) 
+predict(m.combined2, df.test_AB, type = "prob") 
+cm <- table(predict(m.combined2), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.combined2)$coefficients/summary(m.combined2)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### Interaction
+```{r multinom2.6}
+set.seed(011)
+summary(m.interaction2) 
+predict(m.interaction2, df.test_AB, type = "prob") 
+cm <- table(predict(m.interaction2), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.interaction2)$coefficients/summary(m.interaction2)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+### Comparing models
+```{r model_compare_1}
+models <- list(m.diabetes2, m.hypertension2, m.BMI2, m.interaction2, m.combined2, m.AB_pos2)
+
+model.names <- c('m.diabetes', 'm.hypertension', 'm.BMI', 'm.interaction', "m.combined", "m.AB_pos")
+
+aictab(cand.set = models, modnames = model.names)
+```
+
+## hippo sparing reference
+```{r multinom3}
+set.seed(0001)
+df.test_AB$Subtype <- relevel(df.test_AB$Subtype, ref = "hippocampal sparing")
+```
+### comparing models
+```{r multinom3.1.2}
+# create models
+set.seed(0001)
+
+m.diabetes3 <- multinom(data = df.test_AB, Subtype ~ CDX_Diabetes + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.hypertension3 <- multinom(data = df.test_AB, Subtype ~ CDX_Hypertension + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.BMI3 <- multinom(data = df.test_AB, Subtype ~ OM_BMI + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.AB_pos3 <- multinom(data = df.test_AB, Subtype ~ AB_pos + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.combined3 <- multinom(data = df.test_AB, Subtype ~ OM_BMI + CDX_Hypertension + CDX_Diabetes + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+
+m.interaction3 <- multinom(data = df.test_AB, Subtype ~  CDX_Diabetes*OM_BMI + Age + Sex + ID_Hispanic + ID_Race_Black + ID_Education)
+```
+#### Diabetes
+```{r multinom3.2}
+set.seed(0001)
+summary(m.diabetes3) 
+predict(m.diabetes3, df.test_AB, type = "prob") 
+cm <- table(predict(m.diabetes3), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.diabetes3)$coefficients/summary(m.diabetes3)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p
+```
+#### BMI
+```{r multinom3.3}
+summary(m.BMI3) 
+predict(m.BMI3, df.test_AB, type = "prob") 
+cm <- table(predict(m.BMI3), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.BMI3)$coefficients/summary(m.BMI3)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+z
+p
+```
+#### Hypertension
+```{r multinon3.4}
+set.seed(011)
+summary(m.hypertension3) 
+predict(m.hypertension3, df.test_AB, type = "prob") 
+cm <- table(predict(m.hypertension3), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.hypertension3)$coefficients/summary(m.hypertension3)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### Combined
+```{r multinom3.5}
+set.seed(011)
+summary(m.combined3) 
+predict(m.combined3, df.test_AB, type = "prob") 
+cm <- table(predict(m.combined3), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.combined3)$coefficients/summary(m.combined3)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### AB positivity
+```{r multinom3.3.3}
+set.seed(011)
+summary(m.AB_pos3) 
+predict(m.AB_pos3, df.test_AB, type = "prob") 
+cm <- table(predict(m.AB_pos3), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.AB_pos3)$coefficients/summary(m.AB_pos3)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+#### Interaction
+```{r multinom3.6}
+set.seed(011)
+summary(m.interaction3) 
+predict(m.interaction3, df.test_AB, type = "prob") 
+cm <- table(predict(m.interaction3), df.test_AB$Subtype); cm
+1-sum(diag(cm))/sum(cm)
+z <- summary(m.interaction3)$coefficients/summary(m.interaction3)$standard.errors 
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+
+### Comparing models
+```{r model_compare_3}
+models <- list(m.diabetes3, m.hypertension3, m.BMI3, m.interaction3, m.combined3)
+
+model.names <- c('m.diabetes', 'm.hypertension', 'm.BMI', 'm.interaction', "m.combined")
+
+aictab(cand.set = models, modnames = model.names)
+```
+
+
+# Model visualization
+
+```{r model_vis}
+
+coef_plot <-df.test_AB %>%
+  mutate(Subtype = case_when(
+    Subtype == "submedian tau" ~ "Sub-median tau",
+    Subtype == "hippocampal sparing" ~ "Hippocampal sparing",
+    Subtype == "limbic predominant" ~ "Limbic predominant",
+    Subtype == "typical" ~ "Typical AD"),
+    Covariate = case_when(
+      Covariate == "OM_BMI" ~ "BMI",
+      Covariate == "CDX_Hypertension" ~  "Hypertension diagnosis",
+      Covariate == "CDX_Diabetes" ~ "Type 2 Diabetes diagnosis",
+      Covariate == "ID_Hispanic" ~ "Hispanic",
+      Covariate == "ID_Race_Black"~ "African American",
+      Covariate == "AB_pos"~ "Amyloid Beta positivity in cortex",
+      Covariate == "Age" ~ "Age",
+      Covariate == "Sex" ~ "Biological Sex"))%>%
+  ggplot(aes(y = Covariate, x = estimate, pch = Subtype,label = OR)) +
+  geom_point(aes(y = Covariate, x=estimate), color= "#FF6666") +  
+  geom_errorbarh(aes(xmax = Upper, xmin = Lower,height = .12), color ="#FF6666",size = 0.6) +  
+  geom_vline(xintercept =0, linetype = "dashed") +
+  scale_shape_manual(values = c(0,2,19)) +
+  geom_text(size = 3, nudge_x = 2,vjust = -0.25) + 
+  facet_grid(.~Subtype) +
+  scale_x_continuous(name ="Regression Coefficients with Odds Ratio", limits=c(-5,5)) +
+  theme(legend.position = "bottom") 
+
+coef_plot
+```

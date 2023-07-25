@@ -1,0 +1,115 @@
+---
+title: "Tau-defined subtypes by sex and metabolics"
+author: "Brandon Hall"
+output:
+  prettydoc::html_pretty:
+    theme: hpster
+    highlight: github
+    toc: true
+    number_sections: true
+---
+
+# Loading libraries
+```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2) # you know this legend
+library(plyr) 
+library(dplyr)
+library(ggsignif) # for creating plots with sigificance added
+library(nnet) # for creating multinomial logistic regression models
+library(AICcmodavg) # for model comparison
+library(tidyverse)
+```
+
+# Getting set up
+## Loading data
+
+This chunk loads the required CSVs and merges them into one dataframe
+```{r data, echo=FALSE, message=TRUE, warning=FALSE}
+setwd("~/Documents/BraskieLab/My projects/Tau subtypes x metabolics/")
+df.subtypes <- read.csv("Subject tau subtype PET data v4.csv")
+colnames(df.subtypes)[1] <- "Med_ID"
+df.HABS <- read.csv("~/Documents/BraskieLab/HABS data/HD 1 Merged 50+ Req 229_cleaned.csv")
+df.our_AB_PET <- read.csv("~/Documents/BraskieLab/HABS data/HABS_HD_FBB_PET_data_2022_12_31 - Inclusions.csv")
+colnames(df.our_AB_PET)[1] = "Med_ID"
+df.our_AB_PET_reduced <- df.our_AB_PET[,c("Med_ID", "AB_pos")]
+df.most<- merge(df.subtypes, df.HABS, by = "Med_ID")
+df.all<- merge(df.most, df.our_AB_PET_reduced, by = "Med_ID")
+#write.csv(df.all, file = "~/Documents/BraskieLab/My projects/Tau subtypes x metabolics/subtype+HABS_merged.csv", row.names = FALSE)
+```
+
+### Duplicating and changing variable types
+
+```{r make_diabetes_and_sex_vars}
+df.all$Diabetes <- df.all$CDX_Diabetes
+df.all$Diabetes <- as.character(df.all$Diabetes)
+df.all$Diabetes[df.all$Diabetes == '0'] <- 'non diabetic'
+df.all$Diabetes[df.all$Diabetes == '1'] <- 'diabetic'
+
+df.all$Sex <- df.all$ID_Gender
+df.all$Sex <- as.character(df.all$Sex)
+df.all$Sex[df.all$ID_Gender == '0'] <- 'male'
+df.all$Sex[df.all$ID_Gender == '1'] <- 'female'
+
+df.all$Subtype[df.all$Subtype == 'not AD'] <- 'submedian tau'
+```
+### Change variable types
+
+This chunk changes the variable types as needed for subsequent analyses
+```{r var_types, echo=FALSE, message=FALSE, warning=FALSE}
+df.all$CDX_Cog <- as.factor(df.all$CDX_Cog)
+df.all$Age <- as.numeric(df.all$Age)
+df.all$ID_Gender <- as.factor(df.all$ID_Gender)
+df.all$CDX_Diabetes <- as.factor(df.all$CDX_Diabetes)
+df.all$Diabetes <- as.factor(df.all$Diabetes)
+df.all$CDX_Hypertension <- as.factor(df.all$CDX_Hypertension)
+df.all$ID_Hispanic[df.all$ID_Hispanic == '3'] <- '2'
+df.all$ID_Hispanic[df.all$ID_Hispanic == '5'] <- '2'
+df.all$ID_Hispanic <- as.factor(df.all$ID_Hispanic)
+df.all$ID_Hispanic <- droplevels(df.all$ID_Hispanic)
+df.all$ID_Race_Black <- as.factor(df.all$ID_Race_Black)
+df.all$APOE4_Positivity <- as.factor(df.all$APOE4_Positivity)
+df.all$simoa_plasma_Total_Tau <- as.numeric(df.all$simoa_plasma_Total_Tau)
+df.all$Final_subtype <- factor(df.all$Final_subtype)
+df.all$X01_AB_FBB_pos <- as.factor(df.all$X01_AB_FBB_pos)
+df.all$APOE4_Positivity <- as.factor(df.all$APOE4_Positivity)
+df.all$OM_BMI <- as.double(df.all$OM_BMI)
+df.all$Subtype <- factor(df.all$Subtype, ordered = FALSE)
+df.all$Age_log <- log(df.all$Age)
+df.all$OM_BMI_log <- log(df.all$OM_BMI)
+df.all$X01_L_hippocampus <- as.numeric(df.all$X01_L_hippocampus)
+df.all$X01_R_hippocampus <- as.numeric(df.all$X01_R_hippocampus)
+df.all$whole_hippo <- (df.all$X01_L_hippocampus + df.all$X01_R_hippocampus)/2
+```
+
+### Subset from MCI & AD
+
+This chunk create subset dataframes from the prior, unified dataframe
+```{r subsetting2}
+# only MCI and AD subjects
+df.mciad <- subset(df.all,df.all$CDX_Cog != "0")
+df.mciad$OM_BMI <- as.double(df.mciad$OM_BMI)
+df.mciad$CDX_Cog <- factor(df.mciad$CDX_Cog, ordered = FALSE)
+df.females <- subset(df.mciad, df.mciad$ID_Gender == "1")
+df.males <- subset(df.mciad, df.mciad$ID_Gender == "0")
+df.submed <- subset(df.mciad, df.mciad$Final_subtype == "0")
+df.typical <- subset(df.mciad, df.mciad$Final_subtype == "1")
+df.lp <- subset(df.mciad, df.mciad$Final_subtype == "2")
+df.hs <- subset(df.mciad, df.mciad$Final_subtype == "3")
+df.MA <- subset(df.mciad, df.mciad$ID_Hispanic != "1")
+df.NHW <- subset(df.mciad, df.mciad$ID_Hispanic == "1") 
+df.black <- subset(df.mciad, df.mciad$ID_Race_Black == "1")
+df.typical_f <- subset(df.typical, df.typical$ID_Gender=="1") # create typical female-only subset
+df.typical_m <- subset(df.typical, df.typical$ID_Gender=="0") # create typical male-only subset
+df.lp_f <- subset(df.lp, df.lp$ID_Gender=="1") # create lp female-only subset
+df.lp_m <- subset(df.lp, df.lp$ID_Gender=="0") # create lp male-only subset
+df.hs_f <- subset(df.hs, df.hs$ID_Gender=="1") # create hs female-only subset
+df.hs_m <- subset(df.hs, df.hs$ID_Gender=="0") # create hs male-only subset
+df.submed_f <- subset(df.submed, df.submed$ID_Gender=="1") # create submed female-only subset
+df.submed_m <- subset(df.submed, df.submed$ID_Gender=="0") # create submed male-only subset
+
+#write.csv(df.mciad, file = "~/Documents/BraskieLab/My projects/Tau subtypes x metabolics/MCI_AD.csv", row.names = FALSE)
+
+df.test <- subset(df.mciad, select = c("Med_ID", "Subtype", "OM_BMI", "OM_BMI_log", "ID_Hispanic", "ID_Race_Black", "CDX_Diabetes", "Diabetes", "CDX_Hypertension", "Age", "Sex", "CDX_Cog", "Ratio.of.Hippocampal.SUVR.to.Neocortical.SUVR", "ID_Hispanic", "ID_Race_Black", "AB_pos")) # create a subsetted data frame containing only what variables I need
+
+df.test <- df.test[complete.cases(df.test) ,] # removed any subjects who have incomplete data
+```
